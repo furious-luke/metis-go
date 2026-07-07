@@ -21,6 +21,9 @@ type SearchResult struct {
 	Content      string  `json:"content"`
 	Score        float64 `json:"score"`
 	Distance     float32 `json:"distance"`
+	// TagKeys holds the document's tag keys, populated only when SearchOptions.IncludeTags
+	// is set. It is nil otherwise — the gateway does not query tags on the default path.
+	TagKeys []string `json:"tag_keys,omitempty"`
 }
 
 // SearchOptions configures a Search request. A nil *SearchOptions applies no tag
@@ -32,13 +35,18 @@ type SearchOptions struct {
 	// K, if set, is the number of results to return. Zero (or negative) uses the
 	// gateway default (10).
 	K int
+	// IncludeTags, if true, asks the gateway to populate each result's TagKeys with
+	// the matching document's tag keys. It is off by default so the search path does
+	// no extra work; it is mainly useful for inspecting a region's corpus.
+	IncludeTags bool
 }
 
 // searchBody mirrors the gateway's searchRequest JSON shape.
 type searchBody struct {
-	Query    string `json:"query"`
-	TagQuery string `json:"tag_query,omitempty"`
-	K        int    `json:"k,omitempty"`
+	Query       string `json:"query"`
+	TagQuery    string `json:"tag_query,omitempty"`
+	K           int    `json:"k,omitempty"`
+	IncludeTags bool   `json:"include_tags,omitempty"`
 }
 
 // searchResponseBody mirrors the gateway's searchResponse JSON shape.
@@ -62,6 +70,7 @@ func (c *Client) Search(ctx context.Context, gatewayURL, searchToken, query stri
 	if opts != nil {
 		body.TagQuery = opts.TagQuery
 		body.K = opts.K
+		body.IncludeTags = opts.IncludeTags
 	}
 
 	payload, err := json.Marshal(body)
