@@ -114,6 +114,27 @@ func TestSpec_DeleteDocument_SurfacesServerError(t *testing.T) {
 	assert.Contains(t, err.Error(), "document not found")
 }
 
+// A delete of a document the account no longer has (a 404) wraps the
+// ErrDocumentNotFound sentinel so callers can treat "already gone" as success.
+func TestSpec_DeleteDocument_NotFoundWrapsSentinel(t *testing.T) {
+	a := newArranger(t)
+	server := a.CustomerServer()
+	server.SetControlPlaneResponse(http.StatusNotFound, "document not found")
+	err := server.DeleteDocument("missing")
+	assert.ErrorIs(t, err, ErrDocumentNotFound)
+}
+
+// Only a 404 maps to ErrDocumentNotFound; any other failing status is a plain
+// error, so an idempotent-delete caller does not mistake it for "already gone".
+func TestSpec_DeleteDocument_OtherFailuresDoNotWrapSentinel(t *testing.T) {
+	a := newArranger(t)
+	server := a.CustomerServer()
+	server.SetControlPlaneResponse(http.StatusInternalServerError, "boom")
+	err := server.DeleteDocument("doc-1")
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrDocumentNotFound)
+}
+
 func TestSpec_ListRegions_ReturnsCatalogueWithEnablement(t *testing.T) {
 	a := newArranger(t)
 	server := a.CustomerServer()

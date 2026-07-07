@@ -4,12 +4,19 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strconv"
 )
+
+// ErrDocumentNotFound is returned (wrapped) by document operations when the
+// control plane reports the document does not exist for the account — a 404,
+// e.g. an already-deleted or not-owned UUID. Callers that treat "already gone"
+// as success (idempotent delete) can detect it with errors.Is.
+var ErrDocumentNotFound = errors.New("document not found")
 
 // Document is the result of ingesting a document via AddDocument. It carries
 // enough for the caller to poll the document's embedding status by UUID.
@@ -214,7 +221,8 @@ func (c *Client) GetDocument(ctx context.Context, uuid string) (*DocumentDetail,
 // DeleteDocument soft-deletes a document by its UUID (scoped to the account) and
 // fans a delete out to the account's regions so the replica is dropped. It
 // returns nil on success. A miss (already deleted / not owned) surfaces as an
-// error carrying the server's 404.
+// error wrapping ErrDocumentNotFound, so callers can treat an already-gone
+// document as success with errors.Is(err, ErrDocumentNotFound).
 func (c *Client) DeleteDocument(ctx context.Context, uuid string) error {
 	endpoint := c.baseURL + "/api/documents/" + url.PathEscape(uuid)
 
@@ -230,6 +238,10 @@ func (c *Client) DeleteDocument(ctx context.Context, uuid string) error {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusNotFound {
+		msg, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("delete document %s: %w: %s", uuid, ErrDocumentNotFound, string(msg))
+	}
 	if resp.StatusCode != http.StatusNoContent {
 		msg, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(msg))
