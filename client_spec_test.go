@@ -56,6 +56,67 @@ func TestSpec_AddDocument_SurfacesServerError(t *testing.T) {
 	assert.Contains(t, err.Error(), "content is required")
 }
 
+func TestSpec_AddDocuments_ReturnsPerItemResults(t *testing.T) {
+	a := newArranger(t)
+	server := a.CustomerServer()
+	results := server.MustAddDocuments([]BulkDocumentInput{
+		{Title: "One", Content: "first"},
+		{Title: "Empty", Content: ""},
+	})
+	require.Len(t, results, 2)
+	assert.Equal(t, "doc-1", results[0].UUID)
+	assert.Equal(t, "pending", results[0].Status)
+	assert.Empty(t, results[0].Error)
+	assert.Equal(t, 1, results[1].Index)
+	assert.Equal(t, "content is required", results[1].Error)
+}
+
+func TestSpec_AddDocuments_PostsBatchToBulkEndpoint(t *testing.T) {
+	a := newArranger(t)
+	server := a.CustomerServer()
+	server.MustAddDocuments([]BulkDocumentInput{
+		{Title: "One", Content: "first", Key: "k1", Tags: []string{"alpha"}},
+	})
+	method, target, body, auth := server.LastControlPlaneRequest()
+	assert.Equal(t, http.MethodPost, method)
+	assert.Equal(t, "/api/documents/bulk", target)
+	assert.Equal(t, "ApiKey "+defaultAPIKey, auth)
+	assert.Contains(t, body, `"documents":[`)
+	assert.Contains(t, body, `"key":"k1"`)
+	assert.Contains(t, body, `"tags":["alpha"]`)
+}
+
+func TestSpec_AddDocuments_SurfacesEnvelopeError(t *testing.T) {
+	a := newArranger(t)
+	server := a.CustomerServer()
+	server.SetControlPlaneResponse(http.StatusBadRequest, "documents is required and must be non-empty")
+	_, err := server.AddDocuments(nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "documents is required")
+}
+
+func TestSpec_DeleteDocuments_ReturnsPerItemResults(t *testing.T) {
+	a := newArranger(t)
+	server := a.CustomerServer()
+	results := server.MustDeleteDocuments([]string{"doc-1", "missing"})
+	require.Len(t, results, 2)
+	assert.True(t, results[0].Deleted)
+	assert.Empty(t, results[0].Error)
+	assert.False(t, results[1].Deleted)
+	assert.Equal(t, "not found", results[1].Error)
+}
+
+func TestSpec_DeleteDocuments_PostsUUIDsToBulkDeleteEndpoint(t *testing.T) {
+	a := newArranger(t)
+	server := a.CustomerServer()
+	server.MustDeleteDocuments([]string{"doc-1", "doc-2"})
+	method, target, body, auth := server.LastControlPlaneRequest()
+	assert.Equal(t, http.MethodPost, method)
+	assert.Equal(t, "/api/documents/bulk-delete", target)
+	assert.Equal(t, "ApiKey "+defaultAPIKey, auth)
+	assert.Contains(t, body, `"uuids":["doc-1","doc-2"]`)
+}
+
 func TestSpec_ListDocuments_ReturnsSummaries(t *testing.T) {
 	a := newArranger(t)
 	server := a.CustomerServer()

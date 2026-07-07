@@ -38,6 +38,32 @@ func (a *CustomerServerActor) AddDocument(title, content string, opts *AddDocume
 	return a.client.AddDocument(context.Background(), title, content, opts)
 }
 
+// MustAddDocuments bulk-ingests documents and fails the test on error.
+func (a *CustomerServerActor) MustAddDocuments(docs []BulkDocumentInput) []BulkDocumentResult {
+	a.t.Helper()
+	results, err := a.client.AddDocuments(context.Background(), docs)
+	require.NoError(a.t, err)
+	return results
+}
+
+// AddDocuments bulk-ingests documents and returns the error for the spec.
+func (a *CustomerServerActor) AddDocuments(docs []BulkDocumentInput) ([]BulkDocumentResult, error) {
+	return a.client.AddDocuments(context.Background(), docs)
+}
+
+// MustDeleteDocuments bulk-deletes uuids and fails the test on error.
+func (a *CustomerServerActor) MustDeleteDocuments(uuids []string) []BulkDeleteResult {
+	a.t.Helper()
+	results, err := a.client.DeleteDocuments(context.Background(), uuids)
+	require.NoError(a.t, err)
+	return results
+}
+
+// DeleteDocuments bulk-deletes uuids and returns the error for the spec.
+func (a *CustomerServerActor) DeleteDocuments(uuids []string) ([]BulkDeleteResult, error) {
+	return a.client.DeleteDocuments(context.Background(), uuids)
+}
+
 // MustListDocuments lists documents and fails the test on error.
 func (a *CustomerServerActor) MustListDocuments(opts *ListDocumentsOptions) []DocumentSummary {
 	a.t.Helper()
@@ -196,6 +222,14 @@ func (f *fakeControlPlane) write(w http.ResponseWriter, status int, body string)
 func (f *fakeControlPlane) defaultResponse(r *http.Request) (int, string) {
 	path := r.URL.Path
 	switch {
+	case r.Method == http.MethodPost && path == "/api/documents/bulk":
+		return http.StatusOK, `{"items":[` +
+			`{"index":0,"id":7,"uuid":"doc-1","status":"pending","unchanged":false},` +
+			`{"index":1,"error":"content is required"}]}`
+	case r.Method == http.MethodPost && path == "/api/documents/bulk-delete":
+		return http.StatusOK, `{"items":[` +
+			`{"index":0,"uuid":"doc-1","deleted":true},` +
+			`{"index":1,"uuid":"missing","deleted":false,"error":"not found"}]}`
 	case r.Method == http.MethodPost && path == "/api/documents":
 		return http.StatusAccepted, `{"id":7,"uuid":"doc-1","status":"pending","unchanged":false}`
 	case r.Method == http.MethodGet && path == "/api/documents":

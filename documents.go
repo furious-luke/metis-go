@@ -148,6 +148,103 @@ func (c *Client) AddDocument(ctx context.Context, title, content string, opts *A
 	return &doc, nil
 }
 
+// BulkDocumentInput is one document in an AddDocuments batch: the same fields as
+// a single AddDocument call (title + content required; key, encoding, and tags
+// optional, with the same upsert-by-key and authoritative-tags semantics).
+type BulkDocumentInput struct {
+	Title    string
+	Content  string
+	Key      string
+	Encoding string
+	Tags     []string
+}
+
+// bulkDocumentBody mirrors the control plane's per-document createDocumentRequest
+// shape inside a bulk request.
+type bulkDocumentBody struct {
+	Title    string   `json:"title"`
+	Content  string   `json:"content"`
+	Encoding string   `json:"encoding,omitempty"`
+	Key      string   `json:"key,omitempty"`
+	Tags     []string `json:"tags,omitempty"`
+}
+
+// bulkAddDocumentsBody mirrors the control plane's bulkCreateDocumentsRequest.
+type bulkAddDocumentsBody struct {
+	Documents []bulkDocumentBody `json:"documents"`
+}
+
+// BulkDocumentResult is one document's outcome in an AddDocuments batch. Index
+// echoes the item's position in the request. On success UUID/Status are set (and
+// Unchanged reports a no-op upsert); on a per-item failure Error is set and the
+// other fields are zero. Each item is processed independently, so a failed item
+// does not affect the others.
+type BulkDocumentResult struct {
+	Index     int    `json:"index"`
+	ID        int64  `json:"id,omitempty"`
+	UUID      string `json:"uuid,omitempty"`
+	Status    string `json:"status,omitempty"`
+	Unchanged bool   `json:"unchanged,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+// bulkAddDocumentsResponse mirrors the control plane's bulkCreateDocumentsResponse.
+type bulkAddDocumentsResponse struct {
+	Items []BulkDocumentResult `json:"items"`
+}
+
+// AddDocuments ingests a batch of documents in one request and returns a per-item
+// result in request order. Each document is ingested independently on the control
+// plane: a malformed or unchanged item is reported in its own BulkDocumentResult
+// (via Error / Unchanged) and never rejects the rest of the batch, so the returned
+// error is non-nil only when the whole request failed (transport, auth, an
+// oversize/empty batch, or a non-200 status). Inspect each result's Error field
+// for per-document failures.
+//
+// As with AddDocument, embedding is asynchronous, so successful items report the
+// document as pending rather than searchable.
+func (c *Client) AddDocuments(ctx context.Context, docs []BulkDocumentInput) ([]BulkDocumentResult, error) {
+	body := bulkAddDocumentsBody{Documents: make([]bulkDocumentBody, len(docs))}
+	for i, d := range docs {
+		body.Documents[i] = bulkDocumentBody{
+			Title:    d.Title,
+			Content:  d.Content,
+			Encoding: d.Encoding,
+			Key:      d.Key,
+			Tags:     d.Tags,
+		}
+	}
+
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/documents/bulk", bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Authorization", "ApiKey "+c.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("do request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(msg))
+	}
+
+	var out bulkAddDocumentsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out.Items, nil
+}
+
 // ListDocumentsOptions configures a ListDocuments request. A nil
 // *ListDocumentsOptions uses the server default limit.
 type ListDocumentsOptions struct {
@@ -247,4 +344,64 @@ func (c *Client) DeleteDocument(ctx context.Context, uuid string) error {
 		return fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(msg))
 	}
 	return nil
+}
+
+// bulkDeleteDocumentsBody mirrors the control plane's bulkDeleteDocumentsRequest.
+type bulkDeleteDocumentsBody struct {
+	UUIDs []string `json:"uuids"`
+}
+
+// BulkDeleteResult is one uuid's outcome in a DeleteDocuments batch. Index echoes
+// the item's position in the request. Deleted reports whether the document was
+// live and is now tombstoned; a miss (already gone / not owned) sets Deleted false
+// with Error "not found" rather than failing the batch, so re-running a purge is
+// idempotent-friendly.
+type BulkDeleteResult struct {
+	Index   int    `json:"index"`
+	UUID    string `json:"uuid"`
+	Deleted bool   `json:"deleted"`
+	Error   string `json:"error,omitempty"`
+}
+
+// bulkDeleteDocumentsResponse mirrors the control plane's bulkDeleteDocumentsResponse.
+type bulkDeleteDocumentsResponse struct {
+	Items []BulkDeleteResult `json:"items"`
+}
+
+// DeleteDocuments soft-deletes a batch of documents by uuid in one request and
+// returns a per-item result in request order. Each uuid is deleted independently:
+// a miss is reported in its own BulkDeleteResult (Deleted false, Error "not
+// found") rather than failing the batch, so the returned error is non-nil only
+// when the whole request failed (transport, auth, an oversize/empty batch, or a
+// non-200 status). Inspect each result's Deleted / Error field for per-document
+// outcomes.
+func (c *Client) DeleteDocuments(ctx context.Context, uuids []string) ([]BulkDeleteResult, error) {
+	payload, err := json.Marshal(bulkDeleteDocumentsBody{UUIDs: uuids})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/documents/bulk-delete", bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Authorization", "ApiKey "+c.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("do request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(msg))
+	}
+
+	var out bulkDeleteDocumentsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out.Items, nil
 }
