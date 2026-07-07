@@ -13,8 +13,9 @@
 //   - Manage documents on the control plane (add / list / get / delete).
 //   - Mint short-lived search tokens scoped to an account + region, to hand to
 //     an in-region agent.
-//   - Run semantic search and fetch documents against a regional gateway with a
-//     search token.
+//   - Run semantic search against a regional gateway with a search token. The
+//     gateway is search-only by design; document management is a control-plane
+//     concern (there is no document get/list on the gateway).
 //
 // The package depends only on the standard library so it can be vendored or
 // imported into external applications without pulling in the rest of Metis.
